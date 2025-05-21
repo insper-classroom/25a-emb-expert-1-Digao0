@@ -20,8 +20,12 @@
 #define AUDIO_IN_PIN 27
 
 #define SAMPLE_RATE 8000
-#define DATA_LENGTH SAMPLE_RATE*2 // WAV_DATA_LENGTH //16000
+#define DATA_LENGTH SAMPLE_RATE*4 // WAV_DATA_LENGTH //16000
 #define FREQ 8000
+
+#define SILENCE_THRESHOLD 20      // valor ADC normalizado (0–255)
+#define SILENCE_DURATION_MS 300  // tempo mínimo de silêncio em milissegundos
+#define SILENCE_SAMPLE_COUNT (SAMPLE_RATE * SILENCE_DURATION_MS / 1000)
 
 char audio[DATA_LENGTH];
 
@@ -56,15 +60,29 @@ void pwm_interrupt_handler() {
     }
 }
 
+static int silence_counter = 0;
+
 bool timer_0_callback(repeating_timer_t* rt) {
-    if (wav_position < DATA_LENGTH) {
-        audio[wav_position++] = adc_read() / 16;
-        return true; // keep repeating
+    uint16_t raw = adc_read();
+    uint8_t sample = raw / 16; // normaliza para 0–255
+
+    audio[wav_position++] = sample;
+
+    // Verifica se o nível está abaixo do limiar
+    if (sample < SILENCE_THRESHOLD) {
+        silence_counter++;
+    } else {
+        silence_counter = 0; // reset se voz for detectada
     }
-    else {
+
+    // Se atingiu silêncio contínuo por tempo suficiente OU encheu o buffer
+    if (silence_counter >= SILENCE_SAMPLE_COUNT || wav_position >= DATA_LENGTH) {
         xSemaphoreGiveFromISR(xSemaphoreRecordDone, 0);
-        return false; // stop repeating
+        silence_counter = 0;
+        return false; // parar o timer
     }
+
+    return true; // continuar gravando
 }
 
 void sin_task() {
@@ -109,7 +127,7 @@ void mic_task() {
 
         if (xSemaphoreTake(xSemaphoreRecordDone, portMAX_DELAY) == pdTRUE) {
         }
-
+      
         xSemaphoreGive(xSemaphorePlayInit);
 
         for (int i = 0; i < DATA_LENGTH; i++) {
